@@ -1,88 +1,9 @@
-// TESTING
+// REAL WORLD TESTING
 // 1) COLLECT DATASET WITH EXTENSION CABLE
+// 2) 15FPS Color - More light?
 
-// Problems to solve
-// ---
-// 1) UI - Press key to start saving. 
-// 2) Try streaming to SSD - MAKE SURE TO PROPERLY ALLOCATE BUFFERS from Write<Something>() threads
-// 3) 15FPS Color - More light?
-// 4) Discard first few frames?
-
-// Known Bugs
-// ---
-// Concurrency
-// a) Only a few or single or no frame saved for 1 or 2 streams (usually depth + IR). Seems to occur
-// when using 'q' to quit early. Possibly to do with how we break loops?
-// b) Seems to be something to do with if(WaitForSingleObject((HANDLE)depthHandle, 200) == WAIT_TIMEOUT) 
-// as it starts the loop index at i = 2 sometimes 
-
-// Coding issues
-// ---
-// TODO Share code
-// TODO Check and delete memory after process threads
-// TODO Command line args: Path, Number of frames (test against ram?)
-// TODO Run a save thread on data buffers in parallel? Need circular buffer (library?)
-// TODO Save Color Exposure values etc
-//IColorCameraSettings*
-//pSettings = NULL;
-//hr = pColorFrame->get_ColorCameraSettings(&pSettings);
-//hr = pSettings->get_ExposureTime(&m_color_exposureTime);
-//hr = pSettings->get_FrameInterval(&m_color_frameInterval);
-//hr = pSettings->get_Gain(&m_color_gain);
-//hr = pSettings->get_Gamma(&m_color_gain);
-// TODO Absolute timestamps if needed (are relative consistent between sensors?)
-// TODO General threaded listener?
-
-
-////Hi Julien,
-////
-////we've already calibrated our device (depth part):
-////
-////fx: 362,4129
-////
-////fy: 362,3314
-////
-////cx: 255,5704
-////
-////cy: 199,9361
-////
-////k1: 0,1016954
-////
-////k2: -0,2846083
-////
-////k3: 0,1041122
-////
-////p1: 0,000173724
-////
-////p2: 0,0002096914
-////
-////The pixel error in (x/y) was: 0,07752998 / 0,07314198 based on 9384 checkerboard corners.
-////
-////We also computed the intrinsics provided by MS in the 3-D data, which are:
-////
-////fx: 364,5731
-////
-////fy: 364,5731
-////
-////cx: 256,6805
-////
-////cy: 201,0916
-////
-////k1: 0,09199
-////
-////k2: -0,26944
-////
-////k3: 0,09640
-////
-////p1: 0
-////
-////p2: 0
-////
-////We also have do have software doing the calibration. 
-////
-////Best
-////
-////Christian
+// GENERAL TODOs
+// 1) READ UP on COM model
 
 #include <Kinect.h>
 #include <iostream>
@@ -186,7 +107,6 @@ void ProcessDepth()
 {
 	HRESULT hr;
 
-	// TODO update IR and Color to the following pattern of accesses
 	// Depth
 	IDepthFrameSource *depthSrc = NULL;
 	hr = kinect->get_DepthFrameSource(&depthSrc);
@@ -215,7 +135,6 @@ void ProcessDepth()
 	{
 		DWORD ret = WaitForSingleObject((HANDLE)depthHandle, 200) ;
 
-		// TODO mirror this in other threads
 		if(ret == WAIT_TIMEOUT) {
 			std::cerr << "!!!Depth Timeout!!!" << endl;
 			std::cerr << i << endl;
@@ -229,7 +148,6 @@ void ProcessDepth()
 			if(!depthReader)
 				exit(EXIT_FAILURE);
 
-			// Reseting event etc - TODO READ UP on COM
 			IDepthFrameArrivedEventArgs* pArgs = nullptr;
 			depthReader->GetFrameArrivedEventData(depthHandle, &pArgs);
 
@@ -285,12 +203,13 @@ void ProcessInfra()
 
 	hr = infraSrc->OpenReader(&infraReader);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
+	SafeRelease(infraSrc);
 
 	// Subscribing reader
 	WAITABLE_HANDLE infraHandle = 0;
 	infraReader->SubscribeFrameArrived(&infraHandle);
-
-	SafeRelease(infraSrc);
+	if(FAILED(hr)) exit(EXIT_FAILURE);
+	
 
 	// Infrared
 	infraImageArray = new Mat*[MAX_FRAMES_TO_CAPTURE];
@@ -306,7 +225,6 @@ void ProcessInfra()
 	{
 		DWORD ret = WaitForSingleObject((HANDLE)infraHandle, 200) ;
 
-		// TODO mirror this in other threads
 		if(ret == WAIT_TIMEOUT) {
 			std::cerr << "!!!Infra Timeout!!!" << endl;
 		}
@@ -319,7 +237,6 @@ void ProcessInfra()
 			if(!infraReader)
 				exit(EXIT_FAILURE);
 
-			// Reseting event etc - TODO READ UP on COM
 			IInfraredFrameArrivedEventArgs* pArgs = nullptr;
 			infraReader->GetFrameArrivedEventData(infraHandle, &pArgs);
 
@@ -372,12 +289,14 @@ void ProcessColor()
 
 	hr = colorSrc->OpenReader(&colorReader);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
+	SafeRelease(colorSrc);
 
 	// Subscribing reader
 	WAITABLE_HANDLE colorHandle = 0;
 	colorReader->SubscribeFrameArrived(&colorHandle);
+	if(FAILED(hr)) exit(EXIT_FAILURE);
 
-	SafeRelease(colorSrc);
+	
 
 	// Color
 	//Mat **colorImageArray = new Mat*[MAX_FRAMES_TO_CAPTURE];
@@ -394,7 +313,6 @@ void ProcessColor()
 
 		DWORD ret = WaitForSingleObject((HANDLE)colorHandle, 200) ;
 
-		// TODO mirror this in other threads
 		if(ret == WAIT_TIMEOUT) {
 			std::cerr << "!!!Color Timeout!!!" << endl;
 		}
@@ -407,7 +325,6 @@ void ProcessColor()
 			if(!colorReader)
 				exit(EXIT_FAILURE);
 
-			// Reseting event etc - TODO READ UP on COM
 			IColorFrameArrivedEventArgs* pArgs = nullptr;
 			colorReader->GetFrameArrivedEventData(colorHandle, &pArgs);
 
@@ -709,15 +626,10 @@ void WriteColor()
 		}
 
 
-		// TODO OpenCV YUY2 to color
-
-
 		// Timestamp
 		out << i << "\t" << colorRelTimeArray[i] << endl;
 
 	}
-
-	// TODO delete buffers as we go? CHECK FOR NULL!
 
 	// Cleaning up
 	if(grayBuf) delete [] grayBuf;
@@ -782,261 +694,5 @@ int main()
 		cout << "ALL DONE!! Enjoy your K4Wv2 Dump" << endl;
 	}
 
-	//// TODO
-	//// Releassing memory
-	//for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
-	//{	
-	//	if(depthBufArray[i] != 0)
-	//		delete [] defBufArray[i];
-
-	//}
-
 	return EXIT_SUCCESS;
-
-		//// Dumping to HDD
-	//for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
-	//{
-	//	
-	//	// Not dumping extra frames without corresponding images at the end
-	//	if(depthImageArray[i] == 0 || infraImageArray[i] == 0)
-	//		break;
-
-	//	// Generating numbered filename and dumping images to disk
-	//	stringstream depthFilename;
-	//	depthFilename << DUMP_PATH << "depth"; 
-	//	depthFilename.width(8);
-	//	depthFilename.fill('0');
-	//	depthFilename << i;
-	//	depthFilename << ".tiff";
-	//	cout << "Writing: " << depthFilename.str() << endl;
-	//	imwrite(depthFilename.str().c_str(), *depthImageArray[i]);
-
-	//	stringstream infraFilename;
-	//	infraFilename << DUMP_PATH << "infra"; 
-	//	infraFilename.width(8);
-	//	infraFilename.fill('0');
-	//	infraFilename << i;
-	//	infraFilename << ".tiff";
-	//	cout << "Writing: " << infraFilename.str() << endl;
-	//	imwrite(infraFilename.str().c_str(), *infraImageArray[i]);
-	//}
-
-	//for(int i = 0; i < cc; ++i)
-	//{
-	//	// Dumping YUY2 raw color to files
-	//	stringstream colorFilename;
-	//	colorFilename << DUMP_PATH << "color"; 
-	//	colorFilename.width(8);
-	//	colorFilename.fill('0');
-	//	colorFilename << i;
-	//	colorFilename << ".yuv";
-	//	cout << "Writing: " << colorFilename.str() << endl;
-	//	FILE* colorFile;
-	//	colorFile = fopen(colorFilename.str().c_str(), "wb");
-	//	fwrite(colorBufArray[i], COLOR_SIZE.area(), COLOR_DEPTH, colorFile);
-	//	fclose(colorFile);
-
-	//	// TODO OpenCV YUY2 to color
-	//}
-
-	//// Setting up handles for waiting
-	//HANDLE handleArray[3];
-	//handleArray[0] = reinterpret_cast<HANDLE>(depthHandle);
-	//handleArray[1] = reinterpret_cast<HANDLE>(infraHandle);
-	//handleArray[2] = reinterpret_cast<HANDLE>(colorHandle);
-	//
-	//int dd = 0, ii = 0, cc = 0;		// Counters for depth, infra, color;
-	//while(1)
-	//{
-	//	//WaitForSingleObject((HANDLE)depthHandle, 1000);
-	//	
-	//	DWORD event = WaitForMultipleObjects(3, (HANDLE*)handleArray, false, 100);
-
-	//	if(event == WAIT_TIMEOUT) {
-	//		std::cerr << "!!!Wait Timeout!!!" << endl;
-	//		continue;
-	//	}
-	//	
-	//	if(event - WAIT_OBJECT_0 == 0) {
-
-	//		if(!depthReader)
-	//			exit(EXIT_FAILURE);
-
-	//		if(dd >= MAX_FRAMES_TO_CAPTURE) 
-	//			break;
-
-	//		// Reseting event etc - TODO READ UP on COM
-	//		IDepthFrameArrivedEventArgs* pArgs = nullptr;
-	//		depthReader->GetFrameArrivedEventData(depthHandle, &pArgs);
-
-	//		IDepthFrameReference *depthRef = nullptr;
-	//		pArgs->get_FrameReference(&depthRef);
-
-	//		//hr = depthReader->AcquireLatestFrame(&depthFrame);
-	//		IDepthFrame* depthFrame = NULL;
-	//		bool processFrame = false;
-
-	//		if(SUCCEEDED(depthRef->AcquireFrame(&depthFrame))) 
-	//		{
-
-	//			// Copying data from Kinect
-	//			depthFrame->CopyFrameDataToArray(DEPTH_SIZE.area(), depthBufArray[dd]);
-	//			processFrame = true;
-
-	////			// DEBUG
-	////			TIMESPAN t;
-	////			depthFrame->get_RelativeTime(&t);
-	//////			std::cout << "TIME: " << t << endl;
-
-	//			depthFrame->Release();
-	//	
-	//			depthImageArray[dd] = new Mat(DEPTH_SIZE, DEPTH_PIXEL_TYPE, depthBufArray[dd], Mat::AUTO_STEP);
-	//			imshow("Depth", *depthImageArray[dd]);
-	//			dd++;
-	//		}
-
-	//		pArgs->Release();
-
-	//		if(waitKey(1) == 'q') break;
-	//	}
-	//	else if(event - WAIT_OBJECT_0 == 1) {
-
-	//		if(!infraReader)
-	//			exit(EXIT_FAILURE);
-
-	//		if(ii >= MAX_FRAMES_TO_CAPTURE) 
-	//			break;
-
-	//		// Reseting event etc - TODO READ UP on COM
-	//		IInfraredFrameArrivedEventArgs* pArgs = nullptr;
-	//		infraReader->GetFrameArrivedEventData(infraHandle, &pArgs);
-
-	//		IInfraredFrameReference *infraRef = nullptr;
-	//		pArgs->get_FrameReference(&infraRef);
-
-	//		//hr = infraReader->AcquireLatestFrame(&infraFrame);
-	//		IInfraredFrame* infraFrame = NULL;
-	//		bool processFrame = false;
-
-	//		if(SUCCEEDED(infraRef->AcquireFrame(&infraFrame))) 
-	//		{
-	//			// Copying data from Kinect
-	//			infraFrame->CopyFrameDataToArray(DEPTH_SIZE.area(), infraBufArray[ii]);
-	//			processFrame = true;
-
-	//			infraFrame->Release();
-	//	
-	//			infraImageArray[ii] = new Mat(DEPTH_SIZE, DEPTH_PIXEL_TYPE, infraBufArray[ii], Mat::AUTO_STEP);
-	//			imshow("Infra", *infraImageArray[ii]);
-	//			ii++;
-	//		}
-
-	//		pArgs->Release();
-
-	//		if(waitKey(1) == 'q') break;
-	//	}
-	//	else if(event - WAIT_OBJECT_0 == 2) {
-	//		if(!colorReader)
-	//			exit(EXIT_FAILURE);
-
-	//		if(cc >= MAX_FRAMES_TO_CAPTURE) 
-	//			break;
-
-	//		// Reseting event etc - TODO READ UP on COM
-	//		IColorFrameArrivedEventArgs* pArgs = nullptr;
-	//		colorReader->GetFrameArrivedEventData(colorHandle, &pArgs);
-
-	//		IColorFrameReference *colorRef = nullptr;
-	//		pArgs->get_FrameReference(&colorRef);
-
-	//		//hr = infraReader->AcquireLatestFrame(&infraFrame);
-	//		IColorFrame* colorFrame = NULL;
-	//		bool processFrame = false;
-
-	//		if(SUCCEEDED(colorRef->AcquireFrame(&colorFrame))) 
-	//		{
-
-
-	//			// Copying data from Kinect
-	//			colorFrame->CopyRawFrameDataToArray(COLOR_SIZE.area()*COLOR_DEPTH, reinterpret_cast<BYTE*>(colorBufArray[cc]));
-	//			processFrame = true;
-
-	//			// DEBUG
-	//			TIMESPAN t;
-	//			colorFrame->get_RelativeTime(&t);
-	//			cout << t <<  ", " << cc << endl;
-
-	//			colorFrame->Release();
-
-
-	//			// TODO How to visualise RGB? Maybe just show Y channel (C1)
-
-	//			//colorImageArray[cc] = new Mat(COLOR_SIZE, COLOR_PIXEL_TYPE, colorBufArray[cc], Mat::AUTO_STEP);
-	//			//imshow("Color", *colorImageArray[cc]);
-	//			cc++;
-	//		}
-
-	//		pArgs->Release();
-
-	//		if(waitKey(1) == 'q') break;
-	//	}
-	//		
-	//	
-	//		
-	//	
-	//}
-
-	//hr = kinect->Close();
-	//if(FAILED(hr)) exit(EXIT_FAILURE);
-
-	//SafeRelease(depthReader);
-	//SafeRelease(infraReader);
-	//SafeRelease(colorReader);
-
-	//// Dumping to HDD
-	//for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
-	//{
-	//	
-	//	// Not dumping extra frames without corresponding images at the end
-	//	if(depthImageArray[i] == 0 || infraImageArray[i] == 0)
-	//		break;
-
-	//	// Generating numbered filename and dumping images to disk
-	//	stringstream depthFilename;
-	//	depthFilename << DUMP_PATH << "depth"; 
-	//	depthFilename.width(8);
-	//	depthFilename.fill('0');
-	//	depthFilename << i;
-	//	depthFilename << ".tiff";
-	//	cout << "Writing: " << depthFilename.str() << endl;
-	//	imwrite(depthFilename.str().c_str(), *depthImageArray[i]);
-
-	//	stringstream infraFilename;
-	//	infraFilename << DUMP_PATH << "infra"; 
-	//	infraFilename.width(8);
-	//	infraFilename.fill('0');
-	//	infraFilename << i;
-	//	infraFilename << ".tiff";
-	//	cout << "Writing: " << infraFilename.str() << endl;
-	//	imwrite(infraFilename.str().c_str(), *infraImageArray[i]);
-	//}
-
-	//for(int i = 0; i < cc; ++i)
-	//{
-	//	// Dumping YUY2 raw color to files
-	//	stringstream colorFilename;
-	//	colorFilename << DUMP_PATH << "color"; 
-	//	colorFilename.width(8);
-	//	colorFilename.fill('0');
-	//	colorFilename << i;
-	//	colorFilename << ".yuv";
-	//	cout << "Writing: " << colorFilename.str() << endl;
-	//	FILE* colorFile;
-	//	colorFile = fopen(colorFilename.str().c_str(), "wb");
-	//	fwrite(colorBufArray[i], COLOR_SIZE.area(), COLOR_DEPTH, colorFile);
-	//	fclose(colorFile);
-
-	//	// TODO OpenCV YUY2 to color
-	//}
-
 }
