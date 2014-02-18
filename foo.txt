@@ -1,0 +1,4 @@
+Bugs to report
+1) Flashing depth
+2) Flashing IR images (correlated with 1)?
+
