@@ -19,6 +19,9 @@
 // Date and time for folder names
 #include <ctime>
 
+// Performance information (memory etc)
+#include <Psapi.h>
+
 // VS2012 (VC11) doesn't have C++11 std round...
 namespace std
 {
@@ -67,11 +70,13 @@ static const char* DEFAULT_DUMP_PATH = "E:/dump/";
 static const INT64 TICKS_TO_US = 10;
 static const INT64 TICKS_TO_MS = 10000;
 
-static const INT32 DEFAULT_NUM_SECONDS_TO_CAPTURE = 90; 
+static const INT32 DEFAULT_NUM_SECONDS_TO_CAPTURE = 60; 
 static const INT32 NUM_FRAMES_PER_SECOND = 30;	// Note that color will be 15FPS if low light
 
 // Rough estimate of HDD per set of frames saved (depth, IR, color) in MegaBytes
-static const float MB_PER_FRAME_SET = 8.5f;		
+static const float HDD_MB_PER_FRAME_SET = 8.5f;	
+static const float RAM_MB_PER_FRAME_SET = 4.8f;	
+static const float RAM_PADDING_RATIO = 1.2f;	// if(ramAvailable < ramEstimate * RAM_PADDING_RATIO) WARN
 
 // ---- Globals for the sake of convenience :) ----
 // Kinect v2 stuff
@@ -202,7 +207,7 @@ void ProcessDepth()
 	}
 	DEPTH_FRAMES_CAPTURED = i;
 	ioMutex.lock();
-		cout << "ProcessDepth Thread DONE!!" << endl;
+		//cout << "ProcessDepth Thread DONE!!" << endl;
 		cout << "Depth frames in RAM: " << DEPTH_FRAMES_CAPTURED<< endl;
 	ioMutex.unlock();
 
@@ -298,7 +303,7 @@ void ProcessInfra()
 	}	
 	INFRA_FRAMES_CAPTURED = i;
 	ioMutex.lock();
-		cout << "ProcessInfra Thread DONE!!" << endl;
+		//cout << "ProcessInfra Thread DONE!!" << endl;
 		cout << "Infra frames in RAM: " << INFRA_FRAMES_CAPTURED << endl;
 	ioMutex.unlock();
 
@@ -397,7 +402,7 @@ void ProcessColor()
 	COLOR_FRAMES_CAPTURED = i;
 
 	ioMutex.lock();
-		cout << "ProcessColor Thread DONE!!" << endl;
+		//cout << "ProcessColor Thread DONE!!" << endl;
 		cout << "Color Frames in RAM: " << COLOR_FRAMES_CAPTURED << endl;
 	ioMutex.unlock();
 
@@ -437,8 +442,8 @@ void WriteDepth()
 		out << i << "\t" << depthRelTimeArray[i] << endl;		
 	}
 	ioMutex.lock();
-		cout << "WriteDepth Thread DONE!!" << endl;
-		cout << "Depth Frames written to " << DUMP_PATH << endl;
+		//cout << "WriteDepth Thread DONE!!" << endl;
+		//cout << "Depth Frames written to " << DUMP_PATH << endl;
 		cout << "Depth Frames written: " << i << endl;
 	ioMutex.unlock();
 
@@ -479,8 +484,8 @@ void WriteInfra()
 
 	}
 	ioMutex.lock();
-		cout << "WriteInfra Thread DONE!!" << endl;
-		cout << "Infra Frames written to " << DUMP_PATH << endl;
+		//cout << "WriteInfra Thread DONE!!" << endl;
+		//cout << "Infra Frames written to " << DUMP_PATH << endl;
 		cout << "Infra Frames written: " << i << endl;
 	ioMutex.unlock();
 }
@@ -671,8 +676,8 @@ void WriteColor()
 	if(depthInColorSpace) delete [] depthInColorSpace;
 
 	ioMutex.lock();
-		cout << "WriteColorThread DONE!!" << endl;
-		cout << "Color Frames written to " << DUMP_PATH << endl;
+		//cout << "WriteColorThread DONE!!" << endl;
+		//cout << "Color Frames written to " << DUMP_PATH << endl;
 		cout << "Color Frames written: " << i << endl;
 	ioMutex.unlock();
 }
@@ -728,81 +733,109 @@ int main(int argc, char** argv)
 		exit(EXIT_FAILURE);
 	}
 
-	thread procDepth(ProcessDepth);
-	thread procInfra(ProcessInfra);
-	thread procColor(ProcessColor);
+	// Asking user if they have enough RAM. 
+	PERFORMANCE_INFORMATION sysInfo;
+	GetPerformanceInfo(&sysInfo, sizeof(sysInfo));
+	float ramEstimate = programState.maxFramesToCapture * RAM_MB_PER_FRAME_SET;
+	float ramAvailable = (float)sysInfo.PageSize * sysInfo.PhysicalAvailable / 1024 / 1024;
+	cout << "   *** CAUTION: THIS PROGRAM EATS YOUR RAM FOR BREAKFAST!!! ***" << endl;
+	cout << "RAM REQUIRED: " << ramEstimate << "MB (Estimate)" << endl;
 
-	procDepth.join();
-	procInfra.join();
-	procColor.join();
-
-	cout << "Closing Kinect and cleaning up" << endl;
-
-	hr = kinect->Close();
-	if(FAILED(hr)) exit(EXIT_FAILURE);
-
-	SafeRelease(depthReader);
-	SafeRelease(infraReader);
-	SafeRelease(colorReader);
-
-	// DUMPING to HDD
-	if(!programState.isDryRun) {
-		// Making directory based on current time
-		time_t t = time(0);
-		struct tm *now = localtime(&t);
-
-		stringstream ss;
-		ss << 1900 + now->tm_year;
-		ss << '-';
-		ss.width(2);
-		ss.fill('0');
-		ss << 1 + now->tm_mon;
-		ss << '-';
-		ss.width(2);
-		ss.fill('0');
-		ss << now->tm_mday;
-		ss << '_';
-		ss.width(2);
-		ss.fill('0');
-		ss << now->tm_hour;
-		ss.width(2);
-		ss.fill('0');
-		ss << now->tm_min;
-		ss.width(2);
-		ss.fill('0');
-		ss << now->tm_sec;
-		ss << '/';
-
-		programState.dumpPath = programState.dumpPath + ss.str();
-
-		cout << "DUMP PATH: " << programState.dumpPath << endl;
-		cout << "Rough Size (MB): " << DEPTH_FRAMES_CAPTURED * MB_PER_FRAME_SET << endl;
-		cout << "ENTER 's' to dump frames to HDD" << endl;
-		char c;
+	char c = 's';		// default we go ahead with capture
+	if(ramAvailable < ramEstimate * RAM_PADDING_RATIO) {
+		cout << "RAM AVAILABLE: " << ramAvailable << "MB" << endl;
+		cout << "   *** YOU DON'T HAVE ENOUGH RAM!!! ***" << endl;
+		cout << "Enter s to CONTINUE at your own RISK!" << endl;
 		std::cin >> c;
+	}
 
-		if(c == 's' || c == 'S') {
-			// Creating directory using Windows API
-			std::wstring wideStr;
-			wideStr.assign(programState.dumpPath.begin(), programState.dumpPath.end());
-			if(!CreateDirectory(wideStr.c_str(), NULL)) {
-				std::cerr << "Unable to Create DUMP Directory" << endl;
-				exit(EXIT_FAILURE);
+
+	if(c == 's' || c == 'S') {
+
+		thread procDepth(ProcessDepth);
+		thread procInfra(ProcessInfra);
+		thread procColor(ProcessColor);
+
+		procDepth.join();
+		procInfra.join();
+		procColor.join();
+
+		cout << "Closing Kinect and cleaning up" << endl;
+
+		hr = kinect->Close();
+		if(FAILED(hr)) exit(EXIT_FAILURE);
+
+		SafeRelease(depthReader);
+		SafeRelease(infraReader);
+		SafeRelease(colorReader);
+
+		// DUMPING to HDD
+		if(!programState.isDryRun) {
+			// Making directory based on current time
+			time_t t = time(0);
+			struct tm *now = localtime(&t);
+
+			stringstream ss;
+			ss << 1900 + now->tm_year;
+			ss << '-';
+			ss.width(2);
+			ss.fill('0');
+			ss << 1 + now->tm_mon;
+			ss << '-';
+			ss.width(2);
+			ss.fill('0');
+			ss << now->tm_mday;
+			ss << '_';
+			ss.width(2);
+			ss.fill('0');
+			ss << now->tm_hour;
+			ss.width(2);
+			ss.fill('0');
+			ss << now->tm_min;
+			ss.width(2);
+			ss.fill('0');
+			ss << now->tm_sec;
+			ss << '/';
+
+			programState.dumpPath = programState.dumpPath + ss.str();
+
+			cout << "DUMP PATH: " << programState.dumpPath << endl;
+			cout << "HDD STORAGE REQUIRED: " << DEPTH_FRAMES_CAPTURED * HDD_MB_PER_FRAME_SET << "MB (Estimate)" << endl;
+			cout << "ENTER 's' to dump frames to HDD" << endl;
+			char c;
+			std::cin >> c;
+
+			if(c == 's' || c == 'S') {
+				// Creating directory using Windows API
+				std::wstring wideStr;
+				wideStr.assign(programState.dumpPath.begin(), programState.dumpPath.end());
+				if(!CreateDirectory(wideStr.c_str(), NULL)) {
+					std::cerr << "Unable to Create DUMP Directory" << endl;
+					exit(EXIT_FAILURE);
+				}
+
+				cout << "Dumping to HDD. This could take a while... " << endl;
+
+				thread writeDepth(WriteDepth);
+				thread writeInfra(WriteInfra);	
+				thread writeColor(WriteColor);
+
+				writeDepth.join();
+				writeInfra.join();
+				writeColor.join();
+
+				cout << endl;
+				cout << "ALL DONE!! Enjoy your K4Wv2 Dump" << endl;
 			}
-
-			cout << "Dumping to HDD. This could take a while... " << endl;
-
-			thread writeDepth(WriteDepth);
-			thread writeInfra(WriteInfra);	
-			thread writeColor(WriteColor);
-
-			writeDepth.join();
-			writeInfra.join();
-			writeColor.join();
-
-			cout << endl;
-			cout << "ALL DONE!! Enjoy your K4Wv2 Dump" << endl;
+			else {
+				cout << "Use -n <num_seconds> to control capture time. Lower == less HDD space" << endl;
+				cout << "It takes around " << HDD_MB_PER_FRAME_SET * NUM_FRAMES_PER_SECOND << "MB of HDD per second" << endl;
+			}
 		}
+	}
+	else {
+		cout << "Use -n <num_seconds> to limit capture time. Lower == less RAM" << endl;
+		cout << "It takes around " << RAM_MB_PER_FRAME_SET * NUM_FRAMES_PER_SECOND << "MB of RAM per second" << endl;
 	}
 
 	return EXIT_SUCCESS;
