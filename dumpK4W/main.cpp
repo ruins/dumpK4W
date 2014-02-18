@@ -102,7 +102,6 @@ static bool CAPTURE_DONE = false;	// Signal used by all threads. True => break l
 // Threading
 std::mutex ioMutex;
 
-
 void ProcessDepth()
 {
 	HRESULT hr;
@@ -129,6 +128,7 @@ void ProcessDepth()
 	for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
 		depthBufArray[i] = new UINT16[DEPTH_SIZE.area()];
 	namedWindow("Depth", WINDOW_AUTOSIZE);
+	Mat flippedDepth(DEPTH_SIZE, DEPTH_PIXEL_TYPE);		// K4W has things the wrong way around...
 
 	int i;
 	for(i = 0; i < MAX_FRAMES_TO_CAPTURE && !CAPTURE_DONE;)
@@ -169,7 +169,8 @@ void ProcessDepth()
 		
 				depthImageArray[i] = new Mat(DEPTH_SIZE, DEPTH_PIXEL_TYPE, depthBufArray[i], Mat::AUTO_STEP);
 
-				imshow("Depth", *depthImageArray[i] * DEPTH_MAGIC_NUMBER);
+				flip(*depthImageArray[i], flippedDepth, 1);	// Mirror about y axis
+				imshow("Depth", flippedDepth * DEPTH_MAGIC_NUMBER);
 
 				++i;	// Incrementing frame number
 			}
@@ -219,6 +220,7 @@ void ProcessInfra()
 	for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
 		infraBufArray[i] = new UINT16[DEPTH_SIZE.area()];
 	namedWindow("Infra", WINDOW_AUTOSIZE);	
+	Mat flippedInfra(DEPTH_SIZE, DEPTH_PIXEL_TYPE);		// K4W has things the wrong way around...
 
 	int i;
 	for(i = 0; i < MAX_FRAMES_TO_CAPTURE && !CAPTURE_DONE;)
@@ -257,7 +259,10 @@ void ProcessInfra()
 				infraFrame->Release();
 		
 				infraImageArray[i] = new Mat(DEPTH_SIZE, DEPTH_PIXEL_TYPE, infraBufArray[i], Mat::AUTO_STEP);
-				imshow("Infra", *infraImageArray[i]);
+
+				flip(*infraImageArray[i], flippedInfra, 1);	// Mirror about y axis
+				imshow("Infra", flippedInfra);
+
 
 				++i;	// Incrementing frame number
 			}
