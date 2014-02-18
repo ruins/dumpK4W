@@ -1,4 +1,8 @@
 Bugs to report
+---
+1) USB extension cable - Intermittent issues with Kinect service :(
+
+Due to reflective objects and scene reflections. Need to test further
 1) Flashing depth
 2) Flashing IR images (correlated with 1)?
 
