@@ -115,9 +115,11 @@ static struct ProgramState
 {
 	string dumpPath;
 	INT32 maxFramesToCapture;
-	bool isDryRun;
-	bool isVerbose;
-
+	bool isDryRun;			// Always skips HDD dump
+	bool isVerbose;			
+	bool isSaveYUY2;		// Raw YUV from sensor
+	bool isSaveGray;		// Grayscale images (Y channel)
+	bool isSaveUnmapped;	// 1920x1080 images
 } programState;
 
 void ProcessDepth()
@@ -514,47 +516,50 @@ void WriteColor()
 		if(colorBufArray[i] == 0)
 			break;
 
-		// Dumping YUY2 raw color to files
-		stringstream colorFilename;
-		colorFilename << DUMP_PATH << "yuyv"; 
-		colorFilename.width(8);
-		colorFilename.fill('0');
-		colorFilename << i;
-		colorFilename << ".yuv";
+		if(programState.isSaveYUY2) {
+			// Dumping YUY2 raw color to files
+			stringstream colorFilename;
+			colorFilename << DUMP_PATH << "yuyv"; 
+			colorFilename.width(8);
+			colorFilename.fill('0');
+			colorFilename << i;
+			colorFilename << ".yuv";
 
-		if(programState.isVerbose)
-			cout << "Writing: " << colorFilename.str() << endl;
-		FILE* colorFile;
-		colorFile = fopen(colorFilename.str().c_str(), "wb");
-		fwrite(colorBufArray[i], COLOR_SIZE.area(), COLOR_DEPTH, colorFile);
-		fclose(colorFile);
-
+			if(programState.isVerbose)
+				cout << "Writing: " << colorFilename.str() << endl;
+			FILE* colorFile;
+			colorFile = fopen(colorFilename.str().c_str(), "wb");
+			fwrite(colorBufArray[i], COLOR_SIZE.area(), COLOR_DEPTH, colorFile);
+			fclose(colorFile);
+		}
 
 		// Filling grayBuf with Y channel
+		// Needed for unmapped 1080p image and depth space mapped image
 		BYTE* cBuf = colorBufArray[i];
 		for(int x = 0; x < COLOR_SIZE.area(); ++x)
 		{
 			grayBuf[x] = cBuf[2*x];
 		}
-
-		// Using OpenCV Mat header to wrap and save
-		stringstream grayFilename;
-		grayFilename << DUMP_PATH << "gray"; 
-		grayFilename.width(8);
-		grayFilename.fill('0');
-		grayFilename << i;
-		grayFilename << ".tiff";
-
-
 		Mat gray(COLOR_SIZE, CV_8UC1, grayBuf, Mat::AUTO_STEP);
 
+		if(programState.isSaveGray && programState.isSaveUnmapped) {
+			// Using OpenCV Mat header to wrap and save
+			stringstream grayFilename;
+			grayFilename << DUMP_PATH << "gray"; 
+			grayFilename.width(8);
+			grayFilename.fill('0');
+			grayFilename << i;
+			grayFilename << ".tiff";
 
-		if(programState.isVerbose)
-			cout << "Writing: " << grayFilename.str() << endl;		
-		imwrite(grayFilename.str().c_str(), gray);		
+			if(programState.isVerbose)
+				cout << "Writing: " << grayFilename.str() << endl;		
+			imwrite(grayFilename.str().c_str(), gray);		
+		}
 
+		// TODO if we only need the depth space mapped RGB, doing 1920x1080 samples is very slow and wasteful
 		// YUY2 to RGB according to:
 		// http://stackoverflow.com/questions/4491649/how-to-convert-yuy2-to-a-bitmap-in-c
+		// Needed for unmapped 1080p image and depth space mapped image
 		BYTE *ptrIn = colorBufArray[i];
 		BYTE *ptrOut = rgbBuf;
 		for (int j = 0;  j < COLOR_SIZE.area()/2;  ++j)
@@ -576,19 +581,20 @@ void WriteColor()
 			ptrOut[5] = saturate_cast<uchar>(( 298 * c + 409 * e + 128) >> 8); // red
 			ptrOut += 6;
 		}
-
-		stringstream rgbFilename;
-		rgbFilename << DUMP_PATH << "rgb"; 
-		rgbFilename.width(8);
-		rgbFilename.fill('0');
-		rgbFilename << i;
-		rgbFilename << ".tiff";
-
 		Mat rgb(COLOR_SIZE, CV_8UC3, rgbBuf, Mat::AUTO_STEP);
 
-		if(programState.isVerbose)
-			cout << "Writing: " << rgbFilename.str() << endl;		
-		imwrite(rgbFilename.str().c_str(), rgb);	
+		if(programState.isSaveUnmapped) {
+			stringstream rgbFilename;
+			rgbFilename << DUMP_PATH << "rgb"; 
+			rgbFilename.width(8);
+			rgbFilename.fill('0');
+			rgbFilename << i;
+			rgbFilename << ".tiff";
+
+			if(programState.isVerbose)
+				cout << "Writing: " << rgbFilename.str() << endl;		
+			imwrite(rgbFilename.str().c_str(), rgb);	
+		}
 
 		// REMAP TO DEPTH SPACE
 		// TODO speed up with LUT?
@@ -610,10 +616,6 @@ void WriteColor()
 
 		UINT16 *depthBuf = depthBufArray[lastDepthIdx];
 		if(depthBuf) {
-			//HRESULT hr = coordMapper->MapColorFrameToDepthSpace(DEPTH_SIZE.area(), depthBuf
-			//	, COLOR_SIZE.area(), colorInDepthSpace);
-			//if(FAILED(hr)) exit(EXIT_FAILURE);
-			
 			HRESULT hr = coordMapper->MapDepthFrameToColorSpace(DEPTH_SIZE.area(), depthBuf
 				, DEPTH_SIZE.area(), depthInColorSpace);
 			if(FAILED(hr)) {
@@ -622,7 +624,31 @@ void WriteColor()
 				exit(EXIT_FAILURE);	
 			}
 
-			memset(grayBufMapped, 0, sizeof(BYTE)*DEPTH_SIZE.area());
+			if(programState.isSaveGray) {
+				memset(grayBufMapped, 0, sizeof(BYTE)*DEPTH_SIZE.area());
+				for(int j = 0; j < DEPTH_SIZE.area(); ++j)
+				{
+					int x = round(depthInColorSpace[j].X);
+					int y = round(depthInColorSpace[j].Y);
+
+					if(x >= 0 && x < COLOR_SIZE.width && y >=0 && y < COLOR_SIZE.height) {
+						grayBufMapped[j] = gray.at<BYTE>(y, x);					
+					}
+				}
+				Mat grayMapped = Mat(DEPTH_SIZE, CV_8UC1, grayBufMapped, Mat::AUTO_STEP);
+
+				stringstream grayMappedFilename;
+				grayMappedFilename << DUMP_PATH << "grayMapped"; 
+				grayMappedFilename.width(8);
+				grayMappedFilename.fill('0');
+				grayMappedFilename << i;
+				grayMappedFilename << ".tiff";
+
+				if(programState.isVerbose)
+					cout << "Writing: " << grayMappedFilename.str() << endl;		
+				imwrite(grayMappedFilename.str().c_str(), grayMapped);
+			}
+
 			memset(rgbBufMapped, 0, sizeof(BYTE)*DEPTH_SIZE.area() * 3);
 			for(int j = 0; j < DEPTH_SIZE.area(); ++j)
 			{
@@ -630,8 +656,6 @@ void WriteColor()
 				int y = round(depthInColorSpace[j].Y);
 
 				if(x >= 0 && x < COLOR_SIZE.width && y >=0 && y < COLOR_SIZE.height) {
-					grayBufMapped[j] = gray.at<BYTE>(y, x);
-					
 					// TODO speed up
 					Vec3b bgrPixel = rgb.at<Vec3b>(y, x);
 					rgbBufMapped[3*j] = bgrPixel[0];
@@ -639,20 +663,7 @@ void WriteColor()
 					rgbBufMapped[3*j+2] = bgrPixel[2];
 				}
 			}
-
-			Mat grayMapped = Mat(DEPTH_SIZE, CV_8UC1, grayBufMapped, Mat::AUTO_STEP);
 			Mat rgbMapped =  Mat(DEPTH_SIZE, CV_8UC3, rgbBufMapped, Mat::AUTO_STEP);
-
-			stringstream grayMappedFilename;
-			grayMappedFilename << DUMP_PATH << "grayMapped"; 
-			grayMappedFilename.width(8);
-			grayMappedFilename.fill('0');
-			grayMappedFilename << i;
-			grayMappedFilename << ".tiff";
-
-			if(programState.isVerbose)
-				cout << "Writing: " << grayMappedFilename.str() << endl;		
-			imwrite(grayMappedFilename.str().c_str(), grayMapped);
 
 			stringstream rgbMappedFilename;
 			rgbMappedFilename << DUMP_PATH << "rgbMapped"; 
@@ -666,10 +677,8 @@ void WriteColor()
 			imwrite(rgbMappedFilename.str().c_str(), rgbMapped);
 		}
 
-
 		// Timestamp
 		out << i << "\t" << colorRelTimeArray[i] << endl;
-
 	}
 
 	// Cleaning up
@@ -719,6 +728,18 @@ int main(int argc, char** argv)
 		TCLAP::SwitchArg verboseSwitch("v", "verbose"
 			, "Prints a lot of text if you turn this on", cmd, false);
 
+		TCLAP::SwitchArg saveYUY2Switch("y", "saveYUY2"
+			, "Saves raw color sensor data as YUY2 format"
+			, cmd, false);
+
+		TCLAP::SwitchArg saveGraySwitch("g", "saveGray"
+			, "Saves grayscale color sensor images; both standard and mapped to depth space"
+			, cmd, false);
+
+		TCLAP::SwitchArg saveUnmappedSwitch("u", "saveUnmapped"
+			, "Saves original 1920x1080 images no in depth space (color images, and gray also if enabled via -g)"
+			, cmd, false);
+
 		// Getting values from command line
 		cmd.parse(argc, argv);
 
@@ -727,6 +748,9 @@ int main(int argc, char** argv)
 		programState.maxFramesToCapture = numSecArg.getValue() * NUM_FRAMES_PER_SECOND;
 		programState.isDryRun = dryRunSwitch.getValue();
 		programState.isVerbose = verboseSwitch.getValue();
+		programState.isSaveGray = saveGraySwitch.getValue();
+		programState.isSaveYUY2 = saveYUY2Switch.getValue();
+		programState.isSaveUnmapped = saveUnmappedSwitch.getValue();
 	}
 
 	catch (TCLAP::ArgException &e) {
