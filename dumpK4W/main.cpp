@@ -1,10 +1,3 @@
-// REAL WORLD TESTING
-// 1) COLLECT DATASET WITH EXTENSION CABLE
-// 2) 15FPS Color - More light?
-
-// GENERAL TODOs
-// 1) READ UP on COM model
-
 #include <Kinect.h>
 #include <iostream>
 #include <sstream>
@@ -67,7 +60,7 @@ static const char* DUMP_PATH = "E:/dump/";
 static const INT64 TICKS_TO_US = 10;
 static const INT64 TICKS_TO_MS = 10000;
 
-static const INT32 NUM_SECONDS_TO_CAPTURE = 30; 
+static const INT32 NUM_SECONDS_TO_CAPTURE = 90; 
 static const INT32 MAX_FRAMES_TO_CAPTURE = 30 * NUM_SECONDS_TO_CAPTURE;	
 
 
