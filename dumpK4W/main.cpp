@@ -12,6 +12,13 @@
 
 #include <algorithm>
 
+// Command line arguments parser
+// http://tclap.sourceforge.net/manual.html
+#include <tclap/CmdLine.h>
+
+// Date and time for folder names
+#include <ctime>
+
 // VS2012 (VC11) doesn't have C++11 std round...
 namespace std
 {
@@ -54,15 +61,17 @@ static const Size COLOR_SIZE = Size(1920, 1080);
 static const int COLOR_DEPTH = 2;
 //static const int COLOR_PIXEL_TYPE = CV_8UC2;
 
-static const char* DUMP_PATH = "E:/dump/";
+static const char* DEFAULT_DUMP_PATH = "E:/dump/";
 
 // Relative Time is in 100ns "Ticks". Divide by these to get us or ms
 static const INT64 TICKS_TO_US = 10;
 static const INT64 TICKS_TO_MS = 10000;
 
-static const INT32 NUM_SECONDS_TO_CAPTURE = 90; 
-static const INT32 MAX_FRAMES_TO_CAPTURE = 30 * NUM_SECONDS_TO_CAPTURE;	
+static const INT32 DEFAULT_NUM_SECONDS_TO_CAPTURE = 90; 
+static const INT32 NUM_FRAMES_PER_SECOND = 30;	// Note that color will be 15FPS if low light
 
+// Rough estimate of HDD per set of frames saved (depth, IR, color) in MegaBytes
+static const float MB_PER_FRAME_SET = 8.5f;		
 
 // ---- Globals for the sake of convenience :) ----
 // Kinect v2 stuff
@@ -74,15 +83,15 @@ static ICoordinateMapper *coordMapper = NULL;
 
 // Frame Data buffers
 static Mat **depthImageArray = NULL;
-static UINT16 *depthBufArray[MAX_FRAMES_TO_CAPTURE];
 static Mat **infraImageArray = NULL;
-static UINT16 *infraBufArray[MAX_FRAMES_TO_CAPTURE];
-static BYTE *colorBufArray[MAX_FRAMES_TO_CAPTURE];
+static UINT16 **depthBufArray = NULL;
+static UINT16 **infraBufArray = NULL;
+static BYTE **colorBufArray = NULL;
 
 // Time Stamps (relative)
-static TIMESPAN depthRelTimeArray[MAX_FRAMES_TO_CAPTURE];
-static TIMESPAN infraRelTimeArray[MAX_FRAMES_TO_CAPTURE];
-static TIMESPAN colorRelTimeArray[MAX_FRAMES_TO_CAPTURE];
+static TIMESPAN *depthRelTimeArray = NULL;
+static TIMESPAN *infraRelTimeArray = NULL;
+static TIMESPAN *colorRelTimeArray = NULL;
 
 // Number of frames captured to RAM
 static int DEPTH_FRAMES_CAPTURED = 0;
@@ -92,8 +101,18 @@ static int COLOR_FRAMES_CAPTURED = 0;
 // Signals
 static bool CAPTURE_DONE = false;	// Signal used by all threads. True => break loop
 
-// Threading
-std::mutex ioMutex;
+// Mutex for I/O critical sections (cout mainly)
+static std::mutex ioMutex;
+
+// Program State set by Command line arguments (before thread start)
+static struct ProgramState
+{
+	string dumpPath;
+	INT32 maxFramesToCapture;
+	bool isDryRun;
+	bool isVerbose;
+
+} programState;
 
 void ProcessDepth()
 {
@@ -113,11 +132,17 @@ void ProcessDepth()
 	hr = depthReader->SubscribeFrameArrived(&depthHandle);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
 
+	// Getting frame to capture limit from cmd line arguments
+	INT32 MAX_FRAMES_TO_CAPTURE = programState.maxFramesToCapture;
+	
 	// Depth Data and Visualization Init
+	depthBufArray = new UINT16*[programState.maxFramesToCapture];
+	depthRelTimeArray = new TIMESPAN [programState.maxFramesToCapture];
 	depthImageArray = new Mat*[MAX_FRAMES_TO_CAPTURE];
 	memset(depthImageArray, 0, sizeof(Mat*)*MAX_FRAMES_TO_CAPTURE);
 	memset(depthBufArray, 0, sizeof(UINT16*)*MAX_FRAMES_TO_CAPTURE);
 	memset(depthRelTimeArray, 0, sizeof(TIMESPAN)*MAX_FRAMES_TO_CAPTURE);
+
 	for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
 		depthBufArray[i] = new UINT16[DEPTH_SIZE.area()];
 	namedWindow("Depth", WINDOW_AUTOSIZE);
@@ -204,12 +229,16 @@ void ProcessInfra()
 	infraReader->SubscribeFrameArrived(&infraHandle);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
 	
+	// Getting frame to capture limit from cmd line arguments
+	INT32 MAX_FRAMES_TO_CAPTURE = programState.maxFramesToCapture;
 
-	// Infrared
+	infraBufArray = new UINT16*[programState.maxFramesToCapture];
+	infraRelTimeArray = new TIMESPAN [programState.maxFramesToCapture];
 	infraImageArray = new Mat*[MAX_FRAMES_TO_CAPTURE];
 	memset(infraImageArray, 0, sizeof(Mat*)*MAX_FRAMES_TO_CAPTURE);
 	memset(infraBufArray, 0, sizeof(UINT16*)*MAX_FRAMES_TO_CAPTURE);
 	memset(infraRelTimeArray, 0, sizeof(TIMESPAN)*MAX_FRAMES_TO_CAPTURE);
+	
 	for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
 		infraBufArray[i] = new UINT16[DEPTH_SIZE.area()];
 	namedWindow("Infra", WINDOW_AUTOSIZE);	
@@ -294,13 +323,14 @@ void ProcessColor()
 	colorReader->SubscribeFrameArrived(&colorHandle);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
 
-	
+	// Getting frame to capture limit from cmd line arguments
+	INT32 MAX_FRAMES_TO_CAPTURE = programState.maxFramesToCapture;
 
-	// Color
-	//Mat **colorImageArray = new Mat*[MAX_FRAMES_TO_CAPTURE];
-	//memset(colorImageArray, 0, sizeof(Mat*)*MAX_FRAMES_TO_CAPTURE);
+	colorBufArray = new BYTE*[programState.maxFramesToCapture];
+	colorRelTimeArray = new TIMESPAN [programState.maxFramesToCapture];
 	memset(colorBufArray, 0, sizeof(BYTE*)*MAX_FRAMES_TO_CAPTURE);
 	memset(colorRelTimeArray, 0, sizeof(TIMESPAN)*MAX_FRAMES_TO_CAPTURE);
+
 	for(int i = 0; i < MAX_FRAMES_TO_CAPTURE; ++i)
 		colorBufArray[i] = new BYTE[COLOR_SIZE.area()*COLOR_DEPTH];
 	//namedWindow("Color", WINDOW_AUTOSIZE);
@@ -376,7 +406,9 @@ void ProcessColor()
 
 void WriteDepth()
 {
-	ofstream out(string(DUMP_PATH) + "depth_times.txt");
+	std::string DUMP_PATH = programState.dumpPath;
+
+	ofstream out(DUMP_PATH + "depth_times.txt");
 	if(out.bad()) {
 		cerr << "Problem opening depth_times.txt" << endl;
 		exit(EXIT_FAILURE);
@@ -398,13 +430,11 @@ void WriteDepth()
 		depthFilename << i;
 		depthFilename << ".tiff";
 
-//		ioMutex.lock();
+		if(programState.isVerbose)
 			cout << "Writing: " << depthFilename.str() << endl;
-			imwrite(depthFilename.str().c_str(), *depthImageArray[i]);
 
-			// Timestamp
-			out << i << "\t" << depthRelTimeArray[i] << endl;		
-//		ioMutex.unlock();
+		imwrite(depthFilename.str().c_str(), *depthImageArray[i]);
+		out << i << "\t" << depthRelTimeArray[i] << endl;		
 	}
 	ioMutex.lock();
 		cout << "WriteDepth Thread DONE!!" << endl;
@@ -416,7 +446,9 @@ void WriteDepth()
 
 void WriteInfra()
 {
-	ofstream out(string(DUMP_PATH) + "infra_times.txt");
+	std::string DUMP_PATH = programState.dumpPath;
+
+	ofstream out(DUMP_PATH + "infra_times.txt");
 	if(out.bad()) {
 		cerr << "Problem opening infra_times.txt" << endl;
 		exit(EXIT_FAILURE);
@@ -439,13 +471,11 @@ void WriteInfra()
 		infraFilename << i;
 		infraFilename << ".tiff";
 
-//		ioMutex.lock();
+		if(programState.isVerbose)
 			cout << "Writing: " << infraFilename.str() << endl;
-			imwrite(infraFilename.str().c_str(), *infraImageArray[i]);
-
-			// Timestamp
-			out << i << "\t" << infraRelTimeArray[i] << endl;
-//		ioMutex.unlock();
+		
+		imwrite(infraFilename.str().c_str(), *infraImageArray[i]);
+		out << i << "\t" << infraRelTimeArray[i] << endl;
 
 	}
 	ioMutex.lock();
@@ -457,7 +487,9 @@ void WriteInfra()
 
 void WriteColor()
 {
-	ofstream out(string(DUMP_PATH) + "color_times.txt");
+	std::string DUMP_PATH = programState.dumpPath;
+
+	ofstream out(DUMP_PATH + "color_times.txt");
 	if(out.bad()) {
 		cerr << "Problem opening color_times.txt" << endl;
 		exit(EXIT_FAILURE);
@@ -484,13 +516,13 @@ void WriteColor()
 		colorFilename << i;
 		colorFilename << ".yuv";
 
-//	ioMutex.lock();
-		cout << "Writing: " << colorFilename.str() << endl;
+		if(programState.isVerbose)
+			cout << "Writing: " << colorFilename.str() << endl;
 		FILE* colorFile;
 		colorFile = fopen(colorFilename.str().c_str(), "wb");
 		fwrite(colorBufArray[i], COLOR_SIZE.area(), COLOR_DEPTH, colorFile);
 		fclose(colorFile);
-//	ioMutex.unlock();
+
 
 		// Filling grayBuf with Y channel
 		BYTE* cBuf = colorBufArray[i];
@@ -511,10 +543,9 @@ void WriteColor()
 		Mat gray(COLOR_SIZE, CV_8UC1, grayBuf, Mat::AUTO_STEP);
 
 
-//		ioMutex.lock();		
-		cout << "Writing: " << grayFilename.str() << endl;		
+		if(programState.isVerbose)
+			cout << "Writing: " << grayFilename.str() << endl;		
 		imwrite(grayFilename.str().c_str(), gray);		
-//		ioMutex.unlock();
 
 		// YUY2 to RGB according to:
 		// http://stackoverflow.com/questions/4491649/how-to-convert-yuy2-to-a-bitmap-in-c
@@ -549,7 +580,8 @@ void WriteColor()
 
 		Mat rgb(COLOR_SIZE, CV_8UC3, rgbBuf, Mat::AUTO_STEP);
 
-		cout << "Writing: " << rgbFilename.str() << endl;		
+		if(programState.isVerbose)
+			cout << "Writing: " << rgbFilename.str() << endl;		
 		imwrite(rgbFilename.str().c_str(), rgb);	
 
 		// REMAP TO DEPTH SPACE
@@ -566,6 +598,9 @@ void WriteColor()
 				break;
 			}
 		}
+
+		// TODO temporary fix. Needs better solution e.g finding nearest depth or assuming zeros for Depth
+		if(lastDepthIdx < 0) lastDepthIdx = 0;
 
 		UINT16 *depthBuf = depthBufArray[lastDepthIdx];
 		if(depthBuf) {
@@ -609,7 +644,8 @@ void WriteColor()
 			grayMappedFilename << i;
 			grayMappedFilename << ".tiff";
 
-			cout << "Writing: " << grayMappedFilename.str() << endl;		
+			if(programState.isVerbose)
+				cout << "Writing: " << grayMappedFilename.str() << endl;		
 			imwrite(grayMappedFilename.str().c_str(), grayMapped);
 
 			stringstream rgbMappedFilename;
@@ -619,7 +655,8 @@ void WriteColor()
 			rgbMappedFilename << i;
 			rgbMappedFilename << ".tiff";
 
-			cout << "Writing: " << rgbMappedFilename.str() << endl;		
+			if(programState.isVerbose)
+				cout << "Writing: " << rgbMappedFilename.str() << endl;		
 			imwrite(rgbMappedFilename.str().c_str(), rgbMapped);
 		}
 
@@ -638,10 +675,9 @@ void WriteColor()
 		cout << "Color Frames written to " << DUMP_PATH << endl;
 		cout << "Color Frames written: " << i << endl;
 	ioMutex.unlock();
-
 }
 
-int main()
+int main(int argc, char** argv)
 {
 	HRESULT hr;
 
@@ -654,6 +690,43 @@ int main()
 	// Getting coordinate mapper
 	hr = kinect->get_CoordinateMapper(&coordMapper);
 	if(FAILED(hr)) exit(EXIT_FAILURE);
+
+	// Parsing command line arguments
+	try {
+		TCLAP::CmdLine cmd("Usage: dumpK4W.exe [-s savepath] [-n num_sec_to_cap] [-d:DRYRUN]", ' ', "0.1");
+
+		// User-specified dump path
+		TCLAP::ValueArg<std::string> dumpPathArg("s", "dumpPath", "Path where frames will be saved to after capture"\
+			, false, DEFAULT_DUMP_PATH, "STRING - e.g. \"E:/dump\"");
+		cmd.add(dumpPathArg);
+
+		// User-specified max frames to capture
+		TCLAP::ValueArg<int> numSecArg("n", "numSec"
+			, "Number of seconds to capture (30 FPS assumed). Program will stop capturing when this number is reached"
+			, false, DEFAULT_NUM_SECONDS_TO_CAPTURE, "INT");
+		cmd.add(numSecArg);
+
+		// Dry-Run - Skip saving to HDD
+		TCLAP::SwitchArg dryRunSwitch("d", "dryRun"
+			, "Dry Run, Nothing saved to HDD. Still uses a lot of RAM", cmd, false);
+
+		TCLAP::SwitchArg verboseSwitch("v", "verbose"
+			, "Prints a lot of text if you turn this on", cmd, false);
+
+		// Getting values from command line
+		cmd.parse(argc, argv);
+
+		// Setting Program State
+		programState.dumpPath = dumpPathArg.getValue();
+		programState.maxFramesToCapture = numSecArg.getValue() * NUM_FRAMES_PER_SECOND;
+		programState.isDryRun = dryRunSwitch.getValue();
+		programState.isVerbose = verboseSwitch.getValue();
+	}
+
+	catch (TCLAP::ArgException &e) {
+		std::cerr << "Command line error: " << e.error() << " for arg " << e.argId() << std::endl;
+		exit(EXIT_FAILURE);
+	}
 
 	thread procDepth(ProcessDepth);
 	thread procInfra(ProcessInfra);
@@ -672,24 +745,64 @@ int main()
 	SafeRelease(infraReader);
 	SafeRelease(colorReader);
 
-	cout << "Press s to dump frames to HDD" << endl;
-	char c;
-	std::cin >> c;
+	// DUMPING to HDD
+	if(!programState.isDryRun) {
+		// Making directory based on current time
+		time_t t = time(0);
+		struct tm *now = localtime(&t);
 
-	if(c == 's' || c == 'S') {
+		stringstream ss;
+		ss << 1900 + now->tm_year;
+		ss << '-';
+		ss.width(2);
+		ss.fill('0');
+		ss << 1 + now->tm_mon;
+		ss << '-';
+		ss.width(2);
+		ss.fill('0');
+		ss << now->tm_mday;
+		ss << '_';
+		ss.width(2);
+		ss.fill('0');
+		ss << now->tm_hour;
+		ss.width(2);
+		ss.fill('0');
+		ss << now->tm_min;
+		ss.width(2);
+		ss.fill('0');
+		ss << now->tm_sec;
+		ss << '/';
 
-		cout << "Dumping to HDD. This could take a while... " << endl;
+		programState.dumpPath = programState.dumpPath + ss.str();
 
-		thread writeDepth(WriteDepth);
-		thread writeInfra(WriteInfra);	
-		thread writeColor(WriteColor);
+		cout << "DUMP PATH: " << programState.dumpPath << endl;
+		cout << "Rough Size (MB): " << DEPTH_FRAMES_CAPTURED * MB_PER_FRAME_SET << endl;
+		cout << "ENTER 's' to dump frames to HDD" << endl;
+		char c;
+		std::cin >> c;
 
-		writeDepth.join();
-		writeInfra.join();
-		writeColor.join();
+		if(c == 's' || c == 'S') {
+			// Creating directory using Windows API
+			std::wstring wideStr;
+			wideStr.assign(programState.dumpPath.begin(), programState.dumpPath.end());
+			if(!CreateDirectory(wideStr.c_str(), NULL)) {
+				std::cerr << "Unable to Create DUMP Directory" << endl;
+				exit(EXIT_FAILURE);
+			}
 
-		cout << endl;
-		cout << "ALL DONE!! Enjoy your K4Wv2 Dump" << endl;
+			cout << "Dumping to HDD. This could take a while... " << endl;
+
+			thread writeDepth(WriteDepth);
+			thread writeInfra(WriteInfra);	
+			thread writeColor(WriteColor);
+
+			writeDepth.join();
+			writeInfra.join();
+			writeColor.join();
+
+			cout << endl;
+			cout << "ALL DONE!! Enjoy your K4Wv2 Dump" << endl;
+		}
 	}
 
 	return EXIT_SUCCESS;
