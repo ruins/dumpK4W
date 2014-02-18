@@ -735,7 +735,11 @@ int main(int argc, char** argv)
 
 	// Asking user if they have enough RAM. 
 	PERFORMANCE_INFORMATION sysInfo;
-	GetPerformanceInfo(&sysInfo, sizeof(sysInfo));
+	if(!GetPerformanceInfo(&sysInfo, sizeof(sysInfo))) {
+		std::cerr << GetLastError() << endl;
+		exit(EXIT_FAILURE);
+	}
+
 	float ramEstimate = programState.maxFramesToCapture * RAM_MB_PER_FRAME_SET;
 	float ramAvailable = (float)sysInfo.PageSize * sysInfo.PhysicalAvailable / 1024 / 1024;
 	cout << "   *** CAUTION: THIS PROGRAM EATS YOUR RAM FOR BREAKFAST!!! ***" << endl;
