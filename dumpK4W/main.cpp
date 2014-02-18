@@ -77,6 +77,7 @@ static const INT32 NUM_FRAMES_PER_SECOND = 30;	// Note that color will be 15FPS 
 static const float HDD_MB_PER_FRAME_SET = 8.5f;	
 static const float RAM_MB_PER_FRAME_SET = 4.8f;	
 static const float RAM_PADDING_RATIO = 1.2f;	// if(ramAvailable < ramEstimate * RAM_PADDING_RATIO) WARN
+static const float HDD_PADDING_RATIO = 2.0f;	// ditto for hdd space
 
 // ---- Globals for the sake of convenience :) ----
 // Kinect v2 stuff
@@ -742,7 +743,7 @@ int main(int argc, char** argv)
 
 	float ramEstimate = programState.maxFramesToCapture * RAM_MB_PER_FRAME_SET;
 	float ramAvailable = (float)sysInfo.PageSize * sysInfo.PhysicalAvailable / 1024 / 1024;
-	cout << "   *** CAUTION: THIS PROGRAM EATS YOUR RAM FOR BREAKFAST!!! ***" << endl;
+	cout << "   *** CAUTION: THIS PROGRAM EATS YOUR RAM FOR DINNER!!! ***" << endl;
 	cout << "RAM REQUIRED: " << ramEstimate << "MB (Estimate)" << endl;
 
 	char c = 's';		// default we go ahead with capture
@@ -775,6 +776,17 @@ int main(int argc, char** argv)
 
 		// DUMPING to HDD
 		if(!programState.isDryRun) {
+			// Asking user if they have enough HDD space
+			std::wstring wideStrBasePath;
+			wideStrBasePath.assign(programState.dumpPath.begin(), programState.dumpPath.end());
+			ULARGE_INTEGER hddAvailabeBytes;
+			if(!GetDiskFreeSpaceEx(wideStrBasePath.c_str(), &hddAvailabeBytes, NULL, NULL)) {
+				std::cerr << GetLastError() << endl;
+				exit(EXIT_FAILURE);
+			}
+			float hddEstimate = DEPTH_FRAMES_CAPTURED * HDD_MB_PER_FRAME_SET;
+			float hddAvailable = (float)hddAvailabeBytes.QuadPart / 1024 / 1024;
+
 			// Making directory based on current time
 			time_t t = time(0);
 			struct tm *now = localtime(&t);
@@ -800,17 +812,22 @@ int main(int argc, char** argv)
 			ss.fill('0');
 			ss << now->tm_sec;
 			ss << '/';
-
 			programState.dumpPath = programState.dumpPath + ss.str();
 
+			cout << "   *** CAUTION: THIS PROGRAM WILL HAVE YOUR HDD AS DESSERT!!! ***" << endl;
 			cout << "DUMP PATH: " << programState.dumpPath << endl;
-			cout << "HDD STORAGE REQUIRED: " << DEPTH_FRAMES_CAPTURED * HDD_MB_PER_FRAME_SET << "MB (Estimate)" << endl;
-			cout << "ENTER 's' to dump frames to HDD" << endl;
-			char c;
-			std::cin >> c;
+			cout << "HDD SPACE REQUIRED: " << hddEstimate << "MB (Estimate)" << endl;
+			cout << "HDD SPACE AVAILABLE: " << hddAvailable << "MB" << endl;
+
+			char c = 's';
+			if(hddAvailable < hddEstimate * HDD_PADDING_RATIO) {
+				cout << "   *** YOU ARE CUTTING IT A BIT CLOSE!!! ***" << endl;
+				cout << "Enter s to CONTINUE at your own RISK!" << endl;
+				std::cin >> c;
+			}
 
 			if(c == 's' || c == 'S') {
-				// Creating directory using Windows API
+				// Creating directory using Windows API using wchar "wide" string
 				std::wstring wideStr;
 				wideStr.assign(programState.dumpPath.begin(), programState.dumpPath.end());
 				if(!CreateDirectory(wideStr.c_str(), NULL)) {
