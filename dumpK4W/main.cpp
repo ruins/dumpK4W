@@ -64,13 +64,13 @@ static const Size COLOR_SIZE = Size(1920, 1080);
 static const int COLOR_DEPTH = 2;
 //static const int COLOR_PIXEL_TYPE = CV_8UC2;
 
-static const char* DEFAULT_DUMP_PATH = "E:/dump/";
+static const char* DEFAULT_DUMP_PATH = "./";
 
 // Relative Time is in 100ns "Ticks". Divide by these to get us or ms
 static const INT64 TICKS_TO_US = 10;
 static const INT64 TICKS_TO_MS = 10000;
 
-static const INT32 DEFAULT_NUM_SECONDS_TO_CAPTURE = 60; 
+static const INT32 DEFAULT_NUM_SECONDS_TO_CAPTURE = 3; 
 static const INT32 NUM_FRAMES_PER_SECOND = 30;	// Note that color will be 15FPS if low light
 
 // Rough estimate of HDD per set of frames saved (depth, IR, color) in MegaBytes
